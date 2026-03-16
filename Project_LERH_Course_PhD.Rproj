@@ -1,13 +1,117 @@
-Version: 1.0
+# Just one time
+install.packages(c("googledrive","remotes"))
+remotes::install_github("r-spatial/rgee")
 
-RestoreWorkspace: Default
-SaveWorkspace: Default
-AlwaysSaveHistory: Default
+# Install Python
+reticulate::install_miniconda()
 
-EnableCodeIndexing: Yes
-UseSpacesForTab: Yes
-NumSpacesForTab: 2
-Encoding: UTF-8
+# Install gee in python
+ee_install()
 
-RnwWeave: Sweave
-LaTeX: pdfLaTeX
+# After install (every time)
+library(rgee) 
+ee_Initialize()
+
+# Canopy Height
+canopy_height <- ee$Image("users/nlang/ETH_GlobalCanopyHeight_2020_10m_v1");
+
+print(canopy_height$getInfo())
+
+canopy_height_clipped = canopy_height$clip(PaulineAOI)
+
+# Study Area
+PaulineAOI = ee$FeatureCollection("projects/ee-paulineisabelledeguy/assets/StudyArea_Rouen")
+
+# Landsat 9
+ls9sr <- ee$ImageCollection("LANDSAT/LC09/C02/T1_L2");
+print(ls9sr$getInfo())
+
+ls9srf <- ls9sr$
+  filterBounds(PaulineAOI)$
+  filter(ee$Filter$lt("CLOUD_COVER", 2))$
+  filter(ee$Filter$dayOfYear(100, 290))$
+  select("ST_B10")$
+  max()$
+  multiply(0.00341802)$
+  add(149)$
+  subtract(273.14)
+
+ls9srf_clipped = ls9srf$clip(PaulineAOI)
+
+# Salvare in Drive un'imagine
+task_img <- ee_image_to_drive(
+  image = canopy_height_clipped,
+  fileFormat = "GEO_TIFF",
+  region = PaulineAOI$geometry(),
+  fileNamePrefix = "canopy_height_Rouen_R_10m",
+  scale=10,
+  )
+task_img$start()
+ee_monitoring(task_img)
+
+#---------------------------------------------------------
+Temperature Vs CH
+#---------------------------------------------------------
+
+# Just one time
+install.packages("ggplot2")
+install.packages("geojsonio")
+install.packages("sf")
+
+# After install (every time)
+library(ggplot2)
+library(sf)
+library(geojsonio)
+library(terra)
+
+stack <- ls9srf$
+  addBands(canopy_height)$
+  rename(c("Temp", "CH"))$
+  mask(canopy_height$gt(2))
+
+stack_clipped = stack$clip(PaulineAOI)
+
+task_img <- ee_image_to_drive(
+  image = stack_clipped,
+  fileFormat = "GEO_TIFF",
+  region = PaulineAOI$geometry(),
+  fileNamePrefix = "stack_",
+  scale=10,
+)
+task_img$start()
+ee_monitoring(task_img)
+
+#---------------------------------------------------------
+# Sample pixels
+samples <- stack_clipped$sample(
+  region = PaulineAOI,
+  scale = 100,
+  numPixels = 1000,
+  geometries = TRUE
+)
+
+# Inspect
+samplesClient <- samples$getInfo()
+
+# Convertire i campioni GEE in dataframe R
+samplesClient.sf <- ee_as_sf(samples)
+
+# Export in GeoPackage 
+sf::write_sf(samplesClient.sf, "Samples_Rouen.gpkg")
+plot(samplesClient.sf)
+
+# Creare un grafico
+chart <- ggplot(samplesClient.sf, aes(x = Temp, y = CH)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Temp vs CH Correlation",
+    x = "Temp",
+    y = "CH"
+  )
+
+print(chart)
+
+ggplot(samplesClient.sf, aes(x=CH, y=Temp))+geom_point()
+linear.model <- lm(data = samplesClient.sf, Temp ~ CH)
+summary(linear.model)
